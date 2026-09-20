@@ -28,8 +28,10 @@ export const HEIGHT = 600;
 const PLAYER_SPEED = 440;   // px/sec — tuned for the wider field
 const BULLET_SPEED = 640;   // px/sec
 const FIRE_COOLDOWN = 0.22; // sec
-const BASE_THREAT_SPEED = 90;    // px/sec descent at round start
-const BASE_SPAWN_INTERVAL = 0.9; // sec between spawns at round start
+// Gentle start: threats drift down slowly and spawn well apart, so the wide
+// field is comfortable early on. Escalation (below) still ramps it up over time.
+const BASE_THREAT_SPEED = 62;    // px/sec descent at round start
+const BASE_SPAWN_INTERVAL = 1.7; // sec between spawns at round start
 
 // Single tunables object. All escalation caps live here — no inline magic numbers.
 export const TUNABLES = {
@@ -40,8 +42,8 @@ export const TUNABLES = {
   WIN_THRESHOLD: 80,        // per-pillar well-architected line
   MIN_SPAWN_INTERVAL: 0.3,  // fastest spawn interval (sec) — escalation cap
   MAX_THREAT_SPEED: 240,    // fastest threat descent (px/s) — escalation cap
-  SPAWN_RAMP: 0.04,         // interval reduction per second of game-logic time
-  SPEED_RAMP: 5,            // px/s speed increase per second of game-logic time
+  SPAWN_RAMP: 0.02,         // interval reduction per second of game-logic time (gentler)
+  SPEED_RAMP: 3,            // px/s speed increase per second of game-logic time (gentler)
 };
 
 // The six Well-Architected pillars — canonical key order for legend + HUD.
@@ -150,7 +152,9 @@ export function createGame({ seed = 12345 } = {}) {
 
   function spawnThreat() {
     const spec = THREAT_CATALOG[rng.int(0, THREAT_CATALOG.length - 1)];
-    const w = 30, h = 22;
+    // Hitbox matches the drawn chip (see render.js drawThreat) so a shot that
+    // visually overlaps a threat actually counts as a hit.
+    const w = 46, h = 34;
     game.threats.push({
       type: spec.type,
       name: spec.name,

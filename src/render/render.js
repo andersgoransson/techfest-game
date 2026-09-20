@@ -40,8 +40,14 @@ const PILLAR_SHORT = {
 };
 
 // ── color helpers ───────────────────────────────────────────────────────────
-function hexToRgb(hex) {
-  const h = hex.replace('#', '');
+// Parse either '#rrggbb' or 'rgb(r,g,b)' / 'rgba(...)' so results of mix()/lighten()
+// (which return rgb() strings) can be fed back into these helpers without producing NaN.
+function hexToRgb(color) {
+  if (typeof color === 'string' && color[0] !== '#') {
+    const m = color.match(/-?\d+\.?\d*/g);
+    if (m && m.length >= 3) return { r: +m[0], g: +m[1], b: +m[2] };
+  }
+  const h = String(color).replace('#', '');
   return {
     r: parseInt(h.slice(0, 2), 16),
     g: parseInt(h.slice(2, 4), 16),
@@ -56,6 +62,11 @@ function lighten(hex, amt) {
   const c = hexToRgb(hex);
   const f = (v) => Math.round(v + (255 - v) * amt);
   return `rgb(${f(c.r)},${f(c.g)},${f(c.b)})`;
+}
+function mix(hexA, hexB, t) {
+  const a = hexToRgb(hexA), b = hexToRgb(hexB);
+  const f = (x, y) => Math.round(x + (y - x) * t);
+  return `rgb(${f(a.r, b.r)},${f(a.g, b.g)},${f(a.b, b.b)})`;
 }
 
 export function createRenderer(ctx, game) {
@@ -78,11 +89,16 @@ export function createRenderer(ctx, game) {
   // ── render-local effect state ─────────────────────────────────────────────
   const particles = []; // {x,y,vx,vy,life,max,color,size,grav,glow}
   const floaters = [];  // {x,y,vy,life,max,text,color,size}
+  const shockwaves = []; // {x,y,life,max,maxR,color,width} — expanding rings
+  const flyers = [];     // {x0,y0,x,y,px,py,tx,ty,life,max,color,pillar} — comet to a pillar
+  const badges = [];     // {x,y,life,max,name,glyph,gain,color,combo} — "pillar protected" popup
   const pulses = {};     // pillar key -> remaining pulse time (sec)
   for (const k of PILLAR_KEYS) pulses[k] = 0;
   let shake = 0;         // remaining shake time (sec)
   let flash = null;      // {color, t, max}
+  let cloudHit = 0;      // remaining "cloud took a hit" flash (sec)
   const stars = makeStars(90);
+  const lerp = (a, b, t) => a + (b - a) * t;
 
   // Deltas we watch to trigger effects.
   let prevFilingFrame = -1;
@@ -169,6 +185,20 @@ export function createRenderer(ctx, game) {
     floaters.push({ x, y, vy: -46, life: 0, max: 1.1, text: str, color, size });
   }
 
+  function shockwave(x, y, color, maxR = 90, max = 0.5, width = 5) {
+    shockwaves.push({ x, y, life: 0, max, maxR, color, width });
+  }
+
+  // A comet that streaks from a hit point to the pillar it protected, then bursts
+  // on arrival — a clear visual link between "threat destroyed" and "pillar filled".
+  function flyToPillar(x, y, tx, ty, color, pillar) {
+    flyers.push({ x0: x, y0: y, x, y, px: x, py: y, tx, ty, life: 0, max: 0.5, color, pillar });
+  }
+
+  function addBadge(x, y, name, glyph, gain, color, combo) {
+    badges.push({ x, y, life: 0, max: 1.5, name, glyph, gain, color, combo });
+  }
+
   // ── coordinate map: play field → canvas ─────────────────────────────────────
   const toCanvas = (px, py) => ({ x: FX + px, y: FY + py });
 
@@ -188,30 +218,45 @@ export function createRenderer(ctx, game) {
     if (prevState !== game.state && (game.state === STATES.PLAYING) && prevState !== STATES.PAUSED) {
       particles.length = 0;
       floaters.length = 0;
+      shockwaves.length = 0;
+      flyers.length = 0;
+      badges.length = 0;
       for (const k of PILLAR_KEYS) pulses[k] = 0;
       shake = 0;
+      cloudHit = 0;
       flash = null;
       prevCloud = game.cloudHealth;
       prevCombo = game.combo;
     }
 
     if (game.state === STATES.PLAYING) {
-      // New filing → burst + floater + pillar pulse.
+      // New filing → big layered explosion + protected-pillar badge + comet to pillar.
       const f = game.lastFiling;
       if (f && f.frame !== prevFilingFrame) {
         prevFilingFrame = f.frame;
         const color = PILLAR_COLORS[f.pillar] || '#8be9fd';
+        const idx = PILLAR_KEYS.indexOf(f.pillar);
         if (typeof f.x === 'number') {
           const p = toCanvas(f.x, f.y);
-          burst(p.x, p.y, color, 16, { speed: 200, life: 0.55 });
-          addFloater(p.x, p.y - 10, `+${TUNABLES.FILL_GAIN}`, lighten(color, 0.3), 22);
+          // Layered blast: colored debris + a bright white core + radial sparks.
+          burst(p.x, p.y, color, 30, { speed: 320, life: 0.65, grav: 220, size: 3 });
+          burst(p.x, p.y, '#ffffff', 12, { speed: 220, life: 0.4, grav: 120, size: 2.5 });
+          ring(p.x, p.y, lighten(color, 0.3), 22);
+          // Expanding shockwaves.
+          shockwave(p.x, p.y, '#ffffff', 64, 0.35, 4);
+          shockwave(p.x, p.y, color, 108, 0.55, 6);
+          // A prominent "which pillar you protected" badge that pops at the hit.
+          const bx = Math.max(FX + 90, Math.min(FX + FW - 90, p.x));
+          addBadge(bx, p.y - 8, PILLAR_NAMES[f.pillar], PILLAR_GLYPH[f.pillar],
+            `+${TUNABLES.FILL_GAIN}`, color, game.combo);
+          // Comet linking the kill to its pillar column.
+          if (idx >= 0) {
+            const pr = pillarRect(idx);
+            const val = Math.max(0, Math.min(100, game.pillars[f.pillar]));
+            flyToPillar(p.x, p.y, pr.x + pr.w / 2, pr.bottom - pr.h * (val / 100), color, f.pillar);
+          }
         }
-        const idx = PILLAR_KEYS.indexOf(f.pillar);
-        if (idx >= 0) {
-          pulses[f.pillar] = 0.5;
-          const pr = pillarRect(idx);
-          burst(pr.x + pr.w / 2, pr.bottom, color, 8, { speed: 120, lift: 60, life: 0.5 });
-        }
+        if (idx >= 0) pulses[f.pillar] = Math.max(pulses[f.pillar], 0.4);
       }
 
       // New callout → big celebration on that pillar.
@@ -232,6 +277,7 @@ export function createRenderer(ctx, game) {
       // Breach → cloud health dropped: shake + red flash + debris at the field floor.
       if (game.cloudHealth < prevCloud) {
         shake = Math.max(shake, 0.4);
+        cloudHit = 0.5;
         flash = { color: 'rgba(255,70,90,0.28)', t: 0, max: 0.45 };
         for (let i = 0; i < 3; i++) {
           burst(FX + FW * Math.random(), FY + FH - 6, '#ff5d73', 10, { speed: 260, lift: 120, life: 0.7 });
@@ -271,7 +317,33 @@ export function createRenderer(ctx, game) {
       f.y += f.vy * dt;
       f.vy *= 0.94;
     }
+    for (let i = shockwaves.length - 1; i >= 0; i--) {
+      const s = shockwaves[i];
+      s.life += dt;
+      if (s.life >= s.max) shockwaves.splice(i, 1);
+    }
+    for (let i = flyers.length - 1; i >= 0; i--) {
+      const f = flyers[i];
+      f.life += dt;
+      const t = Math.min(1, f.life / f.max);
+      const e = t * t * (3 - 2 * t); // smoothstep
+      f.px = f.x; f.py = f.y;
+      f.x = lerp(f.x0, f.tx, e);
+      f.y = lerp(f.y0, f.ty, e) - Math.sin(Math.PI * t) * 46; // lob upward
+      if (f.life >= f.max) {
+        // Arrival: burst + shockwave on the pillar it protected, and pulse it hard.
+        burst(f.tx, f.ty, f.color, 16, { speed: 180, life: 0.5, grav: 60 });
+        shockwave(f.tx, f.ty, lighten(f.color, 0.3), 46, 0.4, 4);
+        if (f.pillar) pulses[f.pillar] = Math.max(pulses[f.pillar] || 0, 0.6);
+        flyers.splice(i, 1);
+      }
+    }
+    for (let i = badges.length - 1; i >= 0; i--) {
+      badges[i].life += dt;
+      if (badges[i].life >= badges[i].max) badges.splice(i, 1);
+    }
     for (const k of PILLAR_KEYS) if (pulses[k] > 0) pulses[k] = Math.max(0, pulses[k] - dt);
+    if (cloudHit > 0) cloudHit = Math.max(0, cloudHit - dt);
     if (shake > 0) shake = Math.max(0, shake - dt);
     if (flash) { flash.t += dt; if (flash.t >= flash.max) flash = null; }
     clock += dt;
@@ -318,20 +390,16 @@ export function createRenderer(ctx, game) {
     }
     ctx.globalAlpha = 1;
 
-    // Danger zone gradient near the breach line.
-    const dz = ctx.createLinearGradient(0, FY + FH - 70, 0, FY + FH);
+    // Danger zone gradient near the breach line, intensifying as the cloud weakens.
+    const frac = Math.max(0, Math.min(1, game.cloudHealth / TUNABLES.START_HEALTH));
+    const dz = ctx.createLinearGradient(0, FY + FH - 90, 0, FY + FH);
     dz.addColorStop(0, 'rgba(255,93,115,0)');
-    dz.addColorStop(1, 'rgba(255,93,115,0.14)');
+    dz.addColorStop(1, `rgba(255,93,115,${0.10 + (1 - frac) * 0.22})`);
     ctx.fillStyle = dz;
-    ctx.fillRect(FX, FY + FH - 70, FW, 70);
-    ctx.strokeStyle = 'rgba(255,93,115,0.5)';
-    ctx.setLineDash([10, 8]);
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(FX, FY + FH - 3);
-    ctx.lineTo(FX + FW, FY + FH - 3);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.fillRect(FX, FY + FH - 90, FW, 90);
+
+    // The cloud the player is defending — sits along the field floor, below the ship.
+    drawCloud(frac);
 
     // Entities (only when a run is active — menu shows the legend instead).
     if (playing) {
@@ -340,7 +408,8 @@ export function createRenderer(ctx, game) {
       if (game.player) drawPlayer(game.player);
     }
 
-    // Particles live in canvas space; draw them clipped to the field.
+    // Particles + shockwaves live in canvas space; draw them clipped to the field.
+    drawShockwaves();
     drawParticles();
 
     ctx.restore(); // end clip
@@ -361,6 +430,74 @@ export function createRenderer(ctx, game) {
     ctx.restore();
   }
 
+  // The defended cloud: a soft puffy bank spanning the field floor, just below the
+  // ship. `frac` is cloudHealth/START_HEALTH — it tints from healthy blue-white
+  // toward red as health drops, and flashes white when it takes a breach hit.
+  function drawCloud(frac) {
+    const pad = 18;
+    const cx0 = FX + pad, cx1 = FX + FW - pad;
+    const width = cx1 - cx0;
+    const bob = Math.sin(clock * 1.1) * 2;
+    const crestY = FY + FH - 34 + bob; // baseline of the puffs — just below the ship
+    const baseY = FY + FH + 6;         // dips just past the field floor (clipped away)
+
+    // Varied flattened "puffs" tile exactly across the width; a fixed puff height
+    // keeps the bank low so it reads as ground the ship hovers over, not a wall.
+    const pattern = [1, 1.5, 1.15, 1.75, 1.25, 1.6, 1.05, 1.45, 1.2, 1.55, 1.1];
+    const sum = pattern.reduce((s, v) => s + v, 0);
+    const unit = width / (2 * sum);
+    const puffH = 26;
+
+    ctx.beginPath();
+    ctx.moveTo(cx0, baseY);
+    ctx.lineTo(cx0, crestY);
+    let x = cx0;
+    for (const p of pattern) {
+      const rx = p * unit;
+      // Bigger puffs stand a touch taller for an organic silhouette.
+      ctx.ellipse(x + rx, crestY, rx, puffH * (0.7 + 0.3 * (p / 1.75)), 0, Math.PI, 0, false);
+      x += 2 * rx;
+    }
+    ctx.lineTo(cx1, baseY);
+    ctx.closePath();
+    const maxR = puffH;
+
+    // Health tint (+ white flash on a hit).
+    const healthy = '#e6edff', danger = '#ff6b7d';
+    let top = mix(danger, healthy, frac);
+    let bot = mix('#b23a49', '#9fb4e8', frac);
+    if (cloudHit > 0) {
+      const w = cloudHit / 0.5;
+      top = mix(top, '#ffffff', w * 0.7);
+      bot = mix(bot, '#ffd0d6', w * 0.7);
+    }
+
+    ctx.save();
+    ctx.shadowColor = frac > 0.4 ? 'rgba(150,180,255,0.5)' : 'rgba(255,90,110,0.6)';
+    ctx.shadowBlur = 22 + (cloudHit > 0 ? 26 : 0);
+    const g = ctx.createLinearGradient(0, crestY - maxR, 0, baseY);
+    g.addColorStop(0, top);
+    g.addColorStop(1, bot);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.restore();
+
+    // Soft crest highlight for a rounded, lit look.
+    ctx.save();
+    ctx.clip(); // clip to the cloud path still on the context
+    const hl = ctx.createLinearGradient(0, crestY - maxR, 0, crestY + 10);
+    hl.addColorStop(0, 'rgba(255,255,255,0.55)');
+    hl.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = hl;
+    ctx.fillRect(cx0, crestY - maxR, width, maxR + 12);
+    ctx.restore();
+
+    // "CLOUD" label riding on the bank.
+    ctx.globalAlpha = 0.5;
+    text('☁ YOUR CLOUD', FX + FW / 2, FY + FH - 12, 'rgba(20,30,60,0.9)', 12, 'center', '800');
+    ctx.globalAlpha = 1;
+  }
+
   function drawParticles() {
     for (const p of particles) {
       const a = 1 - p.life / p.max;
@@ -370,6 +507,105 @@ export function createRenderer(ctx, game) {
       const s = p.size * (0.6 + a * 0.6);
       ctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
       ctx.shadowBlur = 0;
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawShockwaves() {
+    ctx.save();
+    for (const s of shockwaves) {
+      const t = s.life / s.max;
+      const r = s.maxR * (t * t * (3 - 2 * t)); // ease-out radius
+      ctx.globalAlpha = Math.max(0, 1 - t);
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = s.width * (1 - t) + 0.5;
+      ctx.shadowColor = s.color;
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  // Comets streaking from a kill to the pillar it protected (drawn unclipped so
+  // they cross from the play field into the pillar bank).
+  function drawFlyers() {
+    ctx.save();
+    for (const f of flyers) {
+      const t = Math.min(1, f.life / f.max);
+      ctx.globalAlpha = Math.max(0, 1 - t * 0.3);
+      // Trail.
+      ctx.strokeStyle = withAlpha(f.color, 0.6);
+      ctx.lineWidth = 3;
+      ctx.shadowColor = f.color;
+      ctx.shadowBlur = 12;
+      ctx.beginPath();
+      ctx.moveTo(f.px, f.py);
+      ctx.lineTo(f.x, f.y);
+      ctx.stroke();
+      // Head.
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  // The "pillar protected" popup that blooms at each kill: glyph + pillar name + gain.
+  function drawBadges() {
+    for (const b of badges) {
+      const t = b.life / b.max;
+      // Pop in (0–0.16), settle, then float up + fade (0.7–1.0).
+      let scale = t < 0.16 ? 0.5 + 0.75 * (t / 0.16)
+        : t < 0.28 ? 1.25 - 0.25 * ((t - 0.16) / 0.12) : 1.0;
+      const alpha = t > 0.7 ? Math.max(0, 1 - (t - 0.7) / 0.3) : 1;
+      const yOff = -34 * t;
+
+      ctx.save();
+      ctx.translate(b.x, b.y + yOff);
+      ctx.scale(scale, scale);
+      ctx.globalAlpha = alpha;
+
+      const label = b.name.toUpperCase();
+      ctx.font = '800 17px system-ui, -apple-system, "Segoe UI", sans-serif';
+      const tw = ctx.measureText(label).width;
+      const pw = tw + 92, ph = 40;
+
+      // Pill.
+      ctx.shadowColor = b.color;
+      ctx.shadowBlur = 22;
+      ctx.fillStyle = 'rgba(8,11,22,0.92)';
+      roundRect(-pw / 2, -ph / 2, pw, ph, 20); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = b.color;
+      roundRect(-pw / 2, -ph / 2, pw, ph, 20); ctx.stroke();
+
+      // Glyph chip (left).
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(b.glyph, -pw / 2 + 22, 6);
+      // Pillar name (center-left).
+      ctx.textAlign = 'left';
+      ctx.fillStyle = lighten(b.color, 0.35);
+      ctx.fillText(label, -pw / 2 + 40, 6);
+      // Gain (right).
+      ctx.textAlign = 'right';
+      ctx.font = '900 18px system-ui, sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(b.gain, pw / 2 - 16, 6);
+
+      // "PROTECTED" caption above the pill.
+      ctx.textAlign = 'center';
+      ctx.font = '800 10px system-ui, sans-serif';
+      ctx.fillStyle = b.color;
+      ctx.fillText(b.combo > 1 ? `PROTECTED · COMBO ×${b.combo}` : 'PROTECTED', 0, -ph / 2 - 6);
+
+      ctx.restore();
     }
     ctx.globalAlpha = 1;
   }
@@ -448,10 +684,11 @@ export function createRenderer(ctx, game) {
   }
 
   function drawThreat(e) {
-    const bob = Math.sin(clock * 4 + e.x * 0.05) * 2;
+    const bob = Math.sin(clock * 4 + e.x * 0.05) * 1; // subtle — kept ≤ the hitbox margin
     const c = toCanvas(e.x, e.y + bob);
     const color = PILLAR_COLORS[e.pillar] || '#ff5d73';
-    const vw = e.w + 14, vh = e.h + 10; // visual chip larger than the hitbox
+    // Solid body === hitbox (game.js spawn w/h): what you see is what you hit.
+    const vw = e.w, vh = e.h;
     ctx.save();
     ctx.translate(c.x, c.y);
 
@@ -640,13 +877,37 @@ export function createRenderer(ctx, game) {
   }
 
   function drawFilingTag() {
-    if (game.state === STATES.PLAYING && game.lastFiling && game.frame - game.lastFiling.frame < 100) {
-      const a = 1 - (game.frame - game.lastFiling.frame) / 100;
-      ctx.globalAlpha = Math.max(0, a);
-      const y = FY + FH - 40;
-      ctx.fillStyle = 'rgba(6,9,18,0.6)';
-      roundRect(FX + FW / 2 - 190, y - 22, 380, 32, 10); ctx.fill();
-      text(game.lastFiling.text, FX + FW / 2, y, '#e6e8f0', 16, 'center', '700');
+    const f = game.lastFiling;
+    if (game.state === STATES.PLAYING && f && game.frame - f.frame < 110) {
+      const age = game.frame - f.frame;
+      const a = age < 8 ? age / 8 : 1 - (age - 8) / 102;
+      ctx.globalAlpha = Math.max(0, Math.min(1, a));
+      const color = PILLAR_COLORS[f.pillar] || '#8be9fd';
+      const cx = FX + FW / 2, cy = FY + FH - 34;
+      const label = (PILLAR_NAMES[f.pillar] || '').toUpperCase();
+      ctx.font = '800 18px system-ui, sans-serif';
+      const tw = ctx.measureText(label).width;
+      const bw = tw + 150, bh = 40;
+
+      // Bar with a colored accent + glow.
+      ctx.save();
+      ctx.shadowColor = color; ctx.shadowBlur = 20;
+      ctx.fillStyle = 'rgba(6,9,18,0.85)';
+      roundRect(cx - bw / 2, cy - bh / 2, bw, bh, 20); ctx.fill();
+      ctx.restore();
+      ctx.lineWidth = 2; ctx.strokeStyle = color;
+      roundRect(cx - bw / 2, cy - bh / 2, bw, bh, 20); ctx.stroke();
+      // Colored glyph disc.
+      ctx.save();
+      ctx.shadowColor = color; ctx.shadowBlur = 12;
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(cx - bw / 2 + 24, cy, 13, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      text(PILLAR_GLYPH[f.pillar] || '⚠️', cx - bw / 2 + 24, cy + 6, '#0b0d17', 15, 'center', '700');
+      // "PROTECTED · <PILLAR>"
+      ctx.textBaseline = 'alphabetic';
+      text('PROTECTED', cx - bw / 2 + 46, cy - 2, '#8a93c8', 11, 'left', '800');
+      text(label, cx - bw / 2 + 46, cy + 13, lighten(color, 0.35), 18, 'left', '800');
       ctx.globalAlpha = 1;
     }
   }
@@ -751,10 +1012,12 @@ export function createRenderer(ctx, game) {
     const playing = game.state === STATES.PLAYING || game.state === STATES.PAUSED;
     drawField(playing);
     drawPillars();
+    drawFlyers();   // comets crossing from the field into the pillar bank
     drawHud();
 
     drawFilingTag();
     drawCallout();
+    drawBadges();   // "pillar protected" popups, on top of everything in-field
 
     if (game.state === STATES.MENU) drawMenu();
     else if (game.state === STATES.PAUSED) {

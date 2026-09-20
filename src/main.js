@@ -23,20 +23,28 @@ function boot() {
   let ready = false;
 
   function frame(now) {
-    let delta = (now - last) / 1000;
-    last = now;
-    if (delta > MAX_FRAME) delta = MAX_FRAME;
-    acc += delta;
+    // Never let a single update/render exception halt the loop — a thrown error
+    // here would otherwise skip the reschedule below and freeze the game on a
+    // half-drawn (blank) frame. Log it and keep animating.
+    try {
+      let delta = (now - last) / 1000;
+      last = now;
+      if (delta > MAX_FRAME) delta = MAX_FRAME;
+      acc += delta;
 
-    while (acc >= FIXED_DT) {
-      update(FIXED_DT, input);
-      acc -= FIXED_DT;
+      while (acc >= FIXED_DT) {
+        update(FIXED_DT, input);
+        acc -= FIXED_DT;
+      }
+      input.endFrame();
+      render();
+
+      if (!ready) { ready = true; if (window.__game) window.__game.ready = true; }
+    } catch (err) {
+      console.error('Game loop error (recovered):', err);
+    } finally {
+      rafId = requestAnimationFrame(frame);
     }
-    input.endFrame();
-    render();
-
-    if (!ready) { ready = true; if (window.__game) window.__game.ready = true; }
-    rafId = requestAnimationFrame(frame);
   }
 
   function destroy() {
