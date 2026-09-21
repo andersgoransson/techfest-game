@@ -1,9 +1,15 @@
 // Bootstraps canvas + input + game loop, and exposes the dev/test hook.
 // Fixed-timestep update accumulator; variable-timestep render.
+//
+// Also owns the app-level "finish flow" that sits on top of the game state
+// machine: when a run ends, the player types their LEGO email, the score is
+// saved to the local leaderboard, and their placement is revealed (explosion +
+// focus on their row). The game core (game.js) stays pure and unaware of this.
 
-import { createGame, TUNABLES, FIXED_DT } from './game/game.js';
+import { createGame, STATES, TUNABLES, FIXED_DT } from './game/game.js';
 import { createInput } from './input.js';
 import { createRenderer } from './render/render.js';
+import * as leaderboard from './leaderboard.js';
 
 const MAX_FRAME = 0.25; // clamp huge gaps (tab was backgrounded)
 
@@ -15,12 +21,55 @@ function boot() {
   const seed = Number(new URLSearchParams(location.search).get('seed')) || 12345;
   const { game, update, start, togglePause, snapshot } = createGame({ seed });
   const input = createInput(canvas);
-  const render = createRenderer(ctx, game);
+
+  // App phase: 'play' (menu/playing/paused/finished game core) → 'name' (email
+  // entry) → 'result' (placement reveal) → back to 'play'.
+  const app = { phase: 'play', name: '', finalScore: 0, result: null };
+  const render = createRenderer(ctx, game, app);
 
   let last = performance.now();
   let acc = 0;
   let rafId = 0;
   let ready = false;
+
+  // --- finish flow transitions ---
+  function submitName(str) {
+    if (typeof str === 'string') app.name = str;
+    const local = leaderboard.normalizeName(app.name);
+    if (!local) return false; // need at least one valid character
+    const res = leaderboard.add(local, app.finalScore);
+    app.result = { name: res.entry.name, score: res.entry.score, rank: res.rank, index: res.index };
+    app.phase = 'result';
+    return true;
+  }
+  function skipName() {
+    app.result = null;
+    app.phase = 'result';
+  }
+  function playAgain() {
+    if (app.phase !== 'result') return;
+    app.phase = 'play';
+    app.name = '';
+    app.result = null;
+    start();          // reset the run (menu/gameover/victory → playing)
+    canvas.focus();
+  }
+
+  // Keyboard for the finish flow only. Gameplay keys stay on the canvas input.
+  function onFinishKey(e) {
+    if (app.phase === 'name') {
+      if (e.key === 'Enter') { e.preventDefault(); submitName(); }
+      else if (e.key === 'Escape') { e.preventDefault(); skipName(); }
+      else if (e.key === 'Backspace') { e.preventDefault(); app.name = app.name.slice(0, -1); }
+      else if (e.key.length === 1 && /[a-zA-Z0-9._+\-@]/.test(e.key)) {
+        e.preventDefault();
+        if (app.name.length < 40) app.name += e.key;
+      }
+    } else if (app.phase === 'result') {
+      if (e.key === ' ' || e.code === 'Space' || e.key === 'Enter') { e.preventDefault(); playAgain(); }
+    }
+  }
+  window.addEventListener('keydown', onFinishKey);
 
   function frame(now) {
     // Never let a single update/render exception halt the loop — a thrown error
@@ -30,11 +79,22 @@ function boot() {
       let delta = (now - last) / 1000;
       last = now;
       if (delta > MAX_FRAME) delta = MAX_FRAME;
-      acc += delta;
 
-      while (acc >= FIXED_DT) {
-        update(FIXED_DT, input);
-        acc -= FIXED_DT;
+      if (app.phase === 'play') {
+        acc += delta;
+        while (acc >= FIXED_DT) {
+          update(FIXED_DT, input);
+          acc -= FIXED_DT;
+        }
+        // A run just ended → enter the name-entry flow (freezes the scene).
+        if (game.state === STATES.GAMEOVER || game.state === STATES.VICTORY) {
+          app.phase = 'name';
+          app.finalScore = game.score;
+          app.name = '';
+          app.result = null;
+        }
+      } else {
+        acc = 0; // don't build a backlog while the overlay is up
       }
       input.endFrame();
       render();
@@ -50,6 +110,7 @@ function boot() {
   function destroy() {
     cancelAnimationFrame(rafId);
     input.destroy();
+    window.removeEventListener('keydown', onFinishKey);
     if (window.__game) window.__game.ready = false;
   }
 
@@ -73,8 +134,16 @@ function boot() {
       get lastCallout()  { return game.lastCallout ? { ...game.lastCallout } : null; },
       get filledPillars(){ return [...game.filledPillars]; },
       snapshot,
+      // Finish-flow observability + affordances (drive without key timing).
+      get phase()        { return app.phase; },
+      get finalScore()   { return app.finalScore; },
+      get result()       { return app.result ? { ...app.result } : null; },
+      get leaderboard()  { return leaderboard.all(); },
+      submitName,
+      skipName,
+      playAgain,
+      clearLeaderboard: () => leaderboard.clear(),
       // Test affordances — drive transitions without simulating key holds.
-      // No selectedPillar / selectPillar: filing is automatic on hit.
       start,
       togglePause,
       _teardown: destroy,

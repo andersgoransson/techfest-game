@@ -23,7 +23,7 @@ export const FIXED_DT = 1 / 60; // seconds per logic tick
 // Logical play-field size (exported so tests/renderer read one source of truth).
 // Landscape-friendly: the renderer composites this field into a 16:9 TV canvas
 // alongside the standing-pillar bank.
-export const WIDTH = 820;
+export const WIDTH = 580;
 export const HEIGHT = 600;
 const PLAYER_SPEED = 440;   // px/sec — tuned for the wider field
 const BULLET_SPEED = 640;   // px/sec

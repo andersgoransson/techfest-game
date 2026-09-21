@@ -11,6 +11,10 @@
 // Randomness here is cosmetic only (never gameplay), so Math.random is fine.
 
 import { PILLAR_KEYS, PILLAR_NAMES, STATES, TUNABLES } from '../game/game.js';
+import * as leaderboard from '../leaderboard.js';
+
+// Medal colors for the top three leaderboard ranks.
+const MEDAL = ['#ffd54a', '#cfd8e6', '#e39a5a'];
 
 // Per-pillar identity: base color + a per-pillar glyph (reused from the callouts).
 const PILLAR_COLORS = {
@@ -69,22 +73,30 @@ function mix(hexA, hexB, t) {
   return `rgb(${f(a.r, b.r)},${f(a.g, b.g)},${f(a.b, b.b)})`;
 }
 
-export function createRenderer(ctx, game) {
+export function createRenderer(ctx, game, app = { phase: 'play' }) {
   const canvas = ctx.canvas;
   const CW = canvas.width;   // 1280
   const CH = canvas.height;  // 720
 
-  // ── layout ──────────────────────────────────────────────────────────────
+  // ── layout: three columns — leaderboard · play field · pillar bank ─────────
   const HUD_H = 84;
-  const FW = game.width;     // logical field width  (820)
+  const FW = game.width;     // logical field width  (580)
   const FH = game.height;    // logical field height (600)
-  const FX = 42;             // field origin on canvas
   const FY = HUD_H + 16;     // 100
-  const SIDE = 34;
-  const PANEL_W = CW - FX - FW - 36 - SIDE; // gap 36 between field and panel
-  const PANEL_X = CW - SIDE - PANEL_W;
+  const MARGIN = 22;
+  const GAP = 22;
+  const LB_W = 300;          // left leaderboard panel width
+  const LB_X = MARGIN;
+  const LB_Y = FY;
+  const LB_H = FH;
+  const PANEL_W = 300;       // right pillar bank width
+  const PANEL_X = CW - MARGIN - PANEL_W;
   const PANEL_Y = FY;
   const PANEL_H = FH;
+  // Center the play field in the slot between the two side panels.
+  const SLOT_X = MARGIN + LB_W + GAP;
+  const SLOT_W = PANEL_X - GAP - SLOT_X;
+  const FX = SLOT_X + Math.max(0, (SLOT_W - FW) / 2);
 
   // ── render-local effect state ─────────────────────────────────────────────
   const particles = []; // {x,y,vx,vy,life,max,color,size,grav,glow}
@@ -99,6 +111,12 @@ export function createRenderer(ctx, game) {
   let cloudHit = 0;      // remaining "cloud took a hit" flash (sec)
   const stars = makeStars(90);
   const lerp = (a, b, t) => a + (b - a) * t;
+
+  // Leaderboard focus animation + result-phase timing.
+  let lbScroll = 0;        // current scroll (px) of the leaderboard list
+  let prevPhase = app.phase;
+  let resultStart = 0;     // clock time when the result reveal began
+  let caretClock = 0;      // blink timer for the name-entry caret
 
   // Deltas we watch to trigger effects.
   let prevFilingFrame = -1;
@@ -735,9 +753,9 @@ export function createRenderer(ctx, game) {
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(0, HUD_H); ctx.lineTo(CW, HUD_H); ctx.stroke();
 
-    // Title.
-    glowText('WELL-ARCHITECTED', SIDE, 34, '#cdd6ff', 20, 'left', '800', 14);
-    text('D E F E N D E R', SIDE, 58, '#6f7bb0', 14, 'left', '700');
+    // Title (aligned to the left column / leaderboard).
+    glowText('WELL-ARCHITECTED', MARGIN, 34, '#cdd6ff', 20, 'left', '800', 14);
+    text('D E F E N D E R', MARGIN, 58, '#6f7bb0', 14, 'left', '700');
 
     // Score (center-left of the bar).
     const sx = 360;
@@ -755,9 +773,9 @@ export function createRenderer(ctx, game) {
       ctx.restore();
     }
 
-    // Cloud health bar (right side).
+    // Cloud health bar (right side, above the pillar bank).
     const bw = 240, bh = 16;
-    const bx = CW - SIDE - bw, by = 34;
+    const bx = CW - MARGIN - bw, by = 34;
     text('☁ CLOUD HEALTH', bx, by - 6, '#7a84b8', 12, 'left', '700');
     ctx.fillStyle = 'rgba(255,255,255,0.08)';
     roundRect(bx, by, bw, bh, 8); ctx.fill();
@@ -988,6 +1006,153 @@ export function createRenderer(ctx, game) {
     glowText('Press  SPACE  to replay', cx, cy + 90, '#ffe066', 20, 'center', '800', 14);
   }
 
+  // ── leaderboard (left column, drawn every frame in every state) ─────────────
+  function fitText(str, size, weight, maxW) {
+    ctx.font = `${weight} ${size}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    if (ctx.measureText(str).width <= maxW) return str;
+    let s = str;
+    while (s.length > 1 && ctx.measureText(s + '…').width > maxW) s = s.slice(0, -1);
+    return s + '…';
+  }
+
+  const ROW_H = 34;
+
+  function drawLbRow(entry, i, x, y, w, hi) {
+    const rank = i + 1;
+    const accent = rank <= 3 ? MEDAL[rank - 1] : '#7f8cc4';
+    const midY = y + ROW_H / 2 + 5;
+    const pulse = hi ? 0.5 + 0.5 * Math.sin(clock * 6) : 0;
+
+    ctx.fillStyle = hi ? withAlpha('#5b8dff', 0.22 + pulse * 0.22) : 'rgba(255,255,255,0.035)';
+    roundRect(x + 2, y + 3, w - 4, ROW_H - 6, 8); ctx.fill();
+    if (hi) {
+      ctx.save();
+      ctx.shadowColor = '#8be9fd'; ctx.shadowBlur = 12 + pulse * 14;
+      ctx.strokeStyle = lighten('#5b8dff', 0.3); ctx.lineWidth = 2;
+      roundRect(x + 2, y + 3, w - 4, ROW_H - 6, 8); ctx.stroke();
+      ctx.restore();
+    }
+    // Rank medal dot for the top three.
+    if (rank <= 3) {
+      ctx.fillStyle = accent;
+      ctx.beginPath(); ctx.arc(x + 20, y + ROW_H / 2, 9, 0, Math.PI * 2); ctx.fill();
+      text(String(rank), x + 20, midY - 1, '#0b0d17', 12, 'center', '900');
+    } else {
+      text(`${rank}`, x + 20, midY, hi ? '#cdd6ff' : '#7f8cc4', 14, 'center', '800');
+    }
+    // Name (truncated to fit) + score.
+    const name = fitText(entry.name, 15, hi ? '800' : '600', w - 118);
+    text(name, x + 40, midY, hi ? '#ffffff' : '#cdd6ff', 15, 'left', hi ? '800' : '600');
+    text(String(entry.score), x + w - 14, midY, hi ? '#8be9fd' : accent, 15, 'right', '800');
+    if (hi) text('YOU', x + w - 14, y - 1, '#8be9fd', 9, 'right', '900');
+  }
+
+  function drawLeaderboard() {
+    const entries = leaderboard.all();
+    const highlightIndex = (app.phase === 'result' && app.result) ? app.result.index : -1;
+
+    // Panel backdrop.
+    ctx.fillStyle = 'rgba(14,18,36,0.55)';
+    roundRect(LB_X - 12, LB_Y - 40, LB_W + 24, LB_H + 52, 16); ctx.fill();
+    ctx.strokeStyle = 'rgba(120,150,255,0.18)'; ctx.lineWidth = 1; ctx.stroke();
+    glowText('🏆 LEADERBOARD', LB_X + LB_W / 2, LB_Y - 16, '#ffe066', 15, 'center', '800', 10);
+
+    const listX = LB_X, listY = LB_Y + 8, listW = LB_W, listH = LB_H - 16;
+
+    // Scroll target: top of the list normally; during the result reveal (after the
+    // explosion beat) animate to center the player's row.
+    let target = 0;
+    const focusing = highlightIndex >= 0 && (clock - resultStart) > 1.3;
+    if (focusing) {
+      const maxScroll = Math.max(0, entries.length * ROW_H - listH);
+      target = Math.min(maxScroll, Math.max(0, highlightIndex * ROW_H - (listH / 2 - ROW_H / 2)));
+    }
+    lbScroll = lerp(lbScroll, target, 0.12);
+    if (Math.abs(lbScroll - target) < 0.4) lbScroll = target;
+
+    ctx.save();
+    roundRect(listX, listY, listW, listH, 10); ctx.clip();
+    if (entries.length === 0) {
+      text('No scores yet.', listX + listW / 2, listY + 46, '#6f7bb0', 15, 'center', '700');
+      text('Be the first on the board!', listX + listW / 2, listY + 70, '#8a93c8', 13, 'center', '600');
+    }
+    for (let i = 0; i < entries.length; i++) {
+      const ry = listY + i * ROW_H - lbScroll;
+      if (ry + ROW_H < listY || ry > listY + listH) continue; // cull offscreen
+      drawLbRow(entries[i], i, listX, ry, listW, i === highlightIndex);
+    }
+    ctx.restore();
+  }
+
+  // ── game-over → name entry → reveal flow (driven by app.phase from main.js) ──
+  function drawNameEntry() {
+    ctx.fillStyle = 'rgba(4,6,13,0.8)';
+    ctx.fillRect(0, 0, CW, CH);
+    const cx = CW / 2, cy = CH / 2;
+    const won = game.state === STATES.VICTORY;
+    panel(cx, cy, 720, 300, 0.92);
+    glowText(won ? 'VICTORY!' : 'GAME OVER', cx, cy - 96, won ? '#ffe066' : '#ff5d73', 46, 'center', '900', 26);
+    text(`Final Score  ${app.finalScore != null ? app.finalScore : game.score}`, cx, cy - 52, '#e6e8f0', 22);
+    text('Enter your LEGO email to save your score', cx, cy - 16, '#aab3e0', 18);
+
+    // Input box.
+    const bw = 540, bh = 52, bx = cx - bw / 2, by = cy + 4;
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    roundRect(bx, by, bw, bh, 10); ctx.fill();
+    ctx.strokeStyle = '#5b8dff'; ctx.lineWidth = 2;
+    roundRect(bx, by, bw, bh, 10); ctx.stroke();
+    const shown = app.name || '';
+    const placeholder = !shown;
+    text(placeholder ? 'firstname.lastname@lego.com' : shown, bx + 18, by + bh / 2 + 7,
+      placeholder ? '#5b6690' : '#ffffff', 22, 'left', '700');
+    // Blinking caret after the typed text.
+    if (!placeholder && Math.floor(caretClock * 2) % 2 === 0) {
+      ctx.font = '700 22px system-ui, -apple-system, "Segoe UI", sans-serif';
+      const tw = ctx.measureText(shown).width;
+      ctx.fillStyle = '#8be9fd';
+      ctx.fillRect(bx + 18 + tw + 2, by + 12, 2, bh - 24);
+    }
+
+    text('ENTER  to save     ·     ESC  to skip', cx, cy + 92, '#8a93c8', 15);
+    text('we save the name before @lego.com so organizers can reach out to winners',
+      cx, cy + 118, '#6f7bb0', 12);
+  }
+
+  function drawResult() {
+    const el = clock - resultStart;
+    const cx = FX + FW / 2, cy = FY + FH * 0.42;
+
+    if (app.result) {
+      const rank = app.result.rank;
+      const rankColor = rank <= 3 ? MEDAL[rank - 1] : '#8be9fd';
+      // Pop-in then gentle settle.
+      const pop = el < 0.22 ? 0.4 + 2.7 * el : Math.max(1, 1.16 - (el - 0.22) * 0.8);
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(pop, pop);
+      glowText('YOU PLACED', 0, -40, '#e6e8f0', 26, 'center', '800', 16);
+      glowText(`#${rank}`, 0, 44, rankColor, 88, 'center', '900', 36);
+      ctx.restore();
+      text(`${app.result.name}  ·  ${app.result.score}`, cx, cy + 96, lighten(rankColor, 0.2), 22, 'center', '800');
+      // Celebratory sparkles during the first beat.
+      if (el < 1.4 && Math.random() < 0.6) {
+        burst(cx + (Math.random() - 0.5) * 340, cy + (Math.random() - 0.5) * 160,
+          ['#ffe066', '#4ade80', '#8be9fd', '#a78bfa', rankColor][Math.floor(Math.random() * 5)],
+          4, { speed: 160, grav: 90, life: 0.9 });
+      }
+    } else {
+      glowText('SCORE NOT SAVED', cx, cy, '#9aa4d8', 32, 'center', '900', 16);
+    }
+    drawParticles();
+
+    if (el > 2.4) {
+      const a = 0.6 + 0.4 * Math.sin(clock * 4);
+      ctx.globalAlpha = a;
+      glowText('Press  SPACE  to play again', CW / 2, FY + FH - 24, '#ffe066', 22, 'center', '800', 14);
+      ctx.globalAlpha = 1;
+    }
+  }
+
   // ── main entry ─────────────────────────────────────────────────────────────
   return function render() {
     const now = performance.now();
@@ -996,6 +1161,20 @@ export function createRenderer(ctx, game) {
     if (dt > 0.1) dt = 0.1; // clamp big gaps (tab backgrounded)
 
     if (game.combo !== prevCombo && game.combo > prevCombo) comboChangedAt = clock;
+    caretClock += dt;
+
+    // Entering the result reveal → set its clock and fire the placement explosion once.
+    if (app.phase === 'result' && prevPhase !== 'result') {
+      resultStart = clock;
+      const cx = FX + FW / 2, cy = FY + FH * 0.42;
+      const rc = app.result && app.result.rank <= 3 ? MEDAL[app.result.rank - 1] : '#8be9fd';
+      burst(cx, cy, rc, 42, { speed: 380, life: 0.8, grav: 160, size: 3.5 });
+      burst(cx, cy, '#ffffff', 18, { speed: 260, life: 0.45, grav: 80 });
+      ring(cx, cy, lighten(rc, 0.3), 34);
+      shockwave(cx, cy, '#ffffff', 120, 0.4, 5);
+      shockwave(cx, cy, rc, 200, 0.65, 7);
+    }
+    prevPhase = app.phase;
 
     detectEvents();
     integrate(dt);
@@ -1019,7 +1198,11 @@ export function createRenderer(ctx, game) {
     drawCallout();
     drawBadges();   // "pillar protected" popups, on top of everything in-field
 
-    if (game.state === STATES.MENU) drawMenu();
+    // Finish flow (name entry / result reveal) takes precedence over the default
+    // game-over/victory panels; those remain as a fallback if the flow isn't wired.
+    if (app.phase === 'name') drawNameEntry();
+    else if (app.phase === 'result') drawResult();
+    else if (game.state === STATES.MENU) drawMenu();
     else if (game.state === STATES.PAUSED) {
       ctx.fillStyle = 'rgba(4,6,13,0.55)';
       ctx.fillRect(0, 0, CW, CH);
@@ -1030,5 +1213,9 @@ export function createRenderer(ctx, game) {
     else if (game.state === STATES.VICTORY) drawVictory();
 
     ctx.restore();
+
+    // Leaderboard is drawn last (outside the shake transform) so it stays crisp —
+    // and stays on top during the result reveal, which is where the focus lands.
+    drawLeaderboard();
   };
 }
