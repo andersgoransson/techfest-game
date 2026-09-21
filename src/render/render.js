@@ -1198,6 +1198,16 @@ export function createRenderer(ctx, game, app = { phase: 'play' }) {
     drawCallout();
     drawBadges();   // "pillar protected" popups, on top of everything in-field
 
+    ctx.restore();  // end shake — overlays + leaderboard draw crisp (unshaken)
+
+    // The leaderboard lives above the play/HUD layer but BELOW the full-screen
+    // menu / game-over / victory / name overlays, so its left-column panel never
+    // covers their centered text. The exception is the result reveal, where the
+    // board is the focus (the player's row is highlighted + scrolled to), so
+    // there it's drawn last, on top.
+    const leaderboardOnTop = app.phase === 'result';
+    if (!leaderboardOnTop) drawLeaderboard();
+
     // Finish flow (name entry / result reveal) takes precedence over the default
     // game-over/victory panels; those remain as a fallback if the flow isn't wired.
     if (app.phase === 'name') drawNameEntry();
@@ -1212,10 +1222,6 @@ export function createRenderer(ctx, game, app = { phase: 'play' }) {
     else if (game.state === STATES.GAMEOVER) drawGameOver();
     else if (game.state === STATES.VICTORY) drawVictory();
 
-    ctx.restore();
-
-    // Leaderboard is drawn last (outside the shake transform) so it stays crisp —
-    // and stays on top during the result reveal, which is where the focus lands.
-    drawLeaderboard();
+    if (leaderboardOnTop) drawLeaderboard();
   };
 }
