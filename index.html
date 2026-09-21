@@ -37,11 +37,163 @@
         letter-spacing: 0.02em;
         pointer-events: none;
       }
+
+      /* Info button — always visible, layered over canvas */
+      #info-btn {
+        position: fixed;
+        top: 12px;
+        right: 16px;
+        z-index: 100;
+        background: rgba(30, 40, 80, 0.82);
+        color: #a8c0ff;
+        border: 1px solid rgba(100, 140, 255, 0.45);
+        border-radius: 20px;
+        padding: 5px 14px;
+        font-size: 13px;
+        font-family: inherit;
+        cursor: pointer;
+        letter-spacing: 0.04em;
+        backdrop-filter: blur(4px);
+        transition: background 0.15s;
+      }
+      #info-btn:hover, #info-btn:focus-visible {
+        background: rgba(50, 70, 160, 0.9);
+        outline: 2px solid #7096ff;
+        outline-offset: 2px;
+      }
+
+      /* Info panel modal */
+      #info-panel-backdrop {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 200;
+        background: rgba(4, 6, 18, 0.72);
+        backdrop-filter: blur(3px);
+        align-items: center;
+        justify-content: center;
+      }
+      #info-panel-backdrop.open {
+        display: flex;
+      }
+      #info-panel {
+        background: #0d1128;
+        border: 1px solid rgba(100, 140, 255, 0.35);
+        border-radius: 12px;
+        padding: 28px 32px 24px;
+        max-width: 560px;
+        width: calc(100% - 48px);
+        max-height: 80vh;
+        overflow-y: auto;
+        box-shadow: 0 8px 48px rgba(40, 80, 255, 0.25);
+        color: #d8dff5;
+        font-size: 14px;
+        line-height: 1.65;
+        position: relative;
+      }
+      #info-panel h2 {
+        margin: 0 0 16px;
+        font-size: 17px;
+        color: #a8c0ff;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      #info-panel h3 {
+        margin: 18px 0 6px;
+        font-size: 13px;
+        color: #7096ff;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+      }
+      #info-panel p, #info-panel ul {
+        margin: 0 0 10px;
+      }
+      #info-panel ul {
+        padding-left: 20px;
+      }
+      #info-panel li {
+        margin-bottom: 4px;
+      }
+      #info-panel .val {
+        color: #7ef0a0;
+        font-weight: 600;
+      }
+      #info-panel .neg {
+        color: #f07e7e;
+        font-weight: 600;
+      }
+      #info-panel-close {
+        position: absolute;
+        top: 14px;
+        right: 16px;
+        background: none;
+        border: none;
+        color: #7096ff;
+        font-size: 20px;
+        cursor: pointer;
+        line-height: 1;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+      #info-panel-close:hover, #info-panel-close:focus-visible {
+        background: rgba(100, 140, 255, 0.15);
+        outline: none;
+      }
     </style>
   </head>
   <body>
     <canvas id="game" width="1280" height="720" tabindex="0"></canvas>
     <div class="hint">← → / A D&nbsp;·&nbsp;move&nbsp;&nbsp;&nbsp;Space&nbsp;·&nbsp;shoot / start&nbsp;&nbsp;&nbsp;P&nbsp;·&nbsp;pause&nbsp;&nbsp;&nbsp;— blast each threat into its pillar · enter your LEGO email at game over to hit the leaderboard</div>
+
+    <button id="info-btn" type="button" aria-haspopup="dialog">How to score?</button>
+
+    <div id="info-panel-backdrop" role="none">
+      <div id="info-panel" role="dialog" aria-modal="true" aria-labelledby="info-panel-title" aria-hidden="true">
+        <button id="info-panel-close" type="button" aria-label="Close info panel">&#x2715;</button>
+        <h2 id="info-panel-title">How to score &amp; win</h2>
+
+        <h3>Victory condition</h3>
+        <p>
+          Fill all six pillars to <span class="val">80</span> or above to achieve a
+          <strong>victory</strong>. Every pillar must reach the win threshold — protect your cloud
+          architecture and win by driving every area past <span class="val">80</span>.
+        </p>
+
+        <h3>Points &amp; pillar fills</h3>
+        <ul>
+          <li>Shooting a threat files it into its pillar: <span class="val">+8</span> fill to that pillar.</li>
+          <li>Your score equals the total of all pillar values multiplied by your current combo multiplier.</li>
+        </ul>
+
+        <h3>Combo multiplier</h3>
+        <p>
+          Each consecutive successful hit adds <span class="val">+1</span> to your combo multiplier —
+          chain shots together for a higher score. Any breach resets the combo multiplier back to
+          <span class="val">1</span>, so keep threats from getting through!
+        </p>
+
+        <h3>Breaches (threats reaching the bottom)</h3>
+        <ul>
+          <li>The breaching threat's pillar loses <span class="neg">-6</span> fill.</li>
+          <li>Your cloud health drops by <span class="neg">-10</span> per breach.</li>
+          <li>Cloud health at zero means game over.</li>
+          <li>Breach resets your combo multiplier to 1.</li>
+        </ul>
+
+        <h3>The six pillars</h3>
+        <ul>
+          <li>Operational Excellence</li>
+          <li>Security</li>
+          <li>Reliability</li>
+          <li>Performance Efficiency</li>
+          <li>Cost Optimization</li>
+          <li>Sustainability</li>
+        </ul>
+
+        <p style="margin-top:16px;opacity:0.55;font-size:12px;">Press <kbd>Esc</kbd> or click &#x2715; to close.</p>
+      </div>
+    </div>
+
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

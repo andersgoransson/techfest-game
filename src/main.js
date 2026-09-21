@@ -18,6 +18,40 @@ function boot() {
   const ctx = canvas.getContext('2d');
   canvas.focus();
 
+  // --- Info panel (DOM overlay, always present) ---
+  const infoBtn       = document.getElementById('info-btn');
+  const infoBackdrop  = document.getElementById('info-panel-backdrop');
+  const infoPanel     = document.getElementById('info-panel');
+  const infoPanelClose = document.getElementById('info-panel-close');
+  let isPanelOpen = false;
+
+  function openInfoPanel() {
+    isPanelOpen = true;
+    infoBackdrop.classList.add('open');
+    infoPanel.setAttribute('aria-hidden', 'false');
+    infoPanelClose.focus();
+  }
+  function closeInfoPanel() {
+    isPanelOpen = false;
+    infoBackdrop.classList.remove('open');
+    infoPanel.setAttribute('aria-hidden', 'true');
+    canvas.focus();
+  }
+
+  infoBtn.addEventListener('click', openInfoPanel);
+  infoPanelClose.addEventListener('click', closeInfoPanel);
+
+  // Escape closes the panel; stopPropagation so onFinishKey on window does NOT
+  // also fire (e.g. Escape=skipName during 'name' phase).
+  function onInfoEscape(e) {
+    if (isPanelOpen && e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeInfoPanel();
+    }
+  }
+  document.addEventListener('keydown', onInfoEscape);
+
   const seed = Number(new URLSearchParams(location.search).get('seed')) || 12345;
   const { game, update, start, togglePause, snapshot } = createGame({ seed });
   const input = createInput(canvas);
@@ -107,10 +141,16 @@ function boot() {
     }
   }
 
+  // Close panel when clicking the backdrop outside the panel box.
+  infoBackdrop.addEventListener('click', (e) => {
+    if (e.target === infoBackdrop) closeInfoPanel();
+  });
+
   function destroy() {
     cancelAnimationFrame(rafId);
     input.destroy();
     window.removeEventListener('keydown', onFinishKey);
+    document.removeEventListener('keydown', onInfoEscape);
     if (window.__game) window.__game.ready = false;
   }
 
