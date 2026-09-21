@@ -190,12 +190,15 @@ function boot() {
   if (DEV) {
     // Stable audio sub-hook delegating to the audio observer.
     const audioHook = {
-      get contextState() { return audioObserver.contextState; },
-      get muted()        { return audioObserver.muted; },
-      set muted(v)       { audioObserver.muted = v; updateMuteBtn(); },
-      get sfxLog()       { return audioObserver.sfxLog; },
-      clearSfxLog()      { audioObserver.clearSfxLog(); },
-      _teardown()        { audioObserver.destroy(); },
+      get contextState()  { return audioObserver.contextState; },
+      get muted()         { return audioObserver.muted; },
+      set muted(v)        { audioObserver.muted = v; updateMuteBtn(); },
+      get sfxLog()        { return audioObserver.sfxLog; },
+      clearSfxLog()       { audioObserver.clearSfxLog(); },
+      _teardown()         { audioObserver.destroy(); },
+      // Music observability (AC-1 through AC-14).
+      get musicPlaying()  { return audioObserver.musicPlaying; },
+      get musicState()    { return audioObserver.musicState; },
     };
 
     window.__game = {

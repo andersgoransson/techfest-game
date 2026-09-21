@@ -240,11 +240,219 @@ export function createAudio(game) {
     combo:    playCombo,
   };
 
+  // ── Background music scheduler ────────────────────────────────────────────
+  // Lookahead scheduler: setInterval every 25ms, schedules notes up to 100ms
+  // ahead of ctx.currentTime. All note data is fixed (no Math.random for
+  // note selection). Math.random is only used to fill noise buffers (cosmetic).
+
+  const STEP_TIME       = 0.1;  // 150 BPM, 16th-note = 60/(150*4) = 0.1s
+  const LOOKAHEAD       = 0.1;  // seconds ahead to schedule
+  const SCHEDULE_INTERVAL_MS = 25; // ms between scheduler ticks
+
+  // Musical data: D minor, 16-step loop.
+  // Lead: square osc, gain 0.10, even steps, dur 0.07s.
+  const LEAD_STEPS  = [0, 2, 4, 6, 8, 10, 12, 14];
+  const LEAD_FREQS  = [293.66, 349.23, 392.00, 349.23, 329.63, 293.66, 261.63, 293.66];
+  // Bass: square osc, gain 0.08, quarter steps, dur 0.18s.
+  const BASS_STEPS  = [0, 4, 8, 12];
+  const BASS_FREQS  = [146.83, 174.61, 146.83, 196.00];
+  // Hi-hat: noise bandpass ~7kHz, gain 0.05, dur 0.018s, even steps.
+  const HIHAT_STEPS = [0, 2, 4, 6, 8, 10, 12, 14];
+  // Kick: noise lowpass ~90Hz, gain 0.35, dur 0.09s, steps 0 and 8.
+  const KICK_STEPS  = [0, 8];
+
+  // Master music gain (all music voices → musicGain → destination).
+  const MUSIC_GAIN_NORMAL = 0.55;
+  let musicGainNode = null; // created lazily when ctx exists
+
+  // Scheduler state.
+  let schedulerInterval = null; // setInterval handle; non-null iff scheduler running
+  let nextNoteTime      = 0;    // absolute ctx time for the next step
+  let currentStep       = 0;    // 0–15
+  let musicState        = 'stopped'; // 'stopped' | 'playing' | 'paused'
+
+  function ensureMusicGain() {
+    if (!ctx || musicGainNode) return;
+    musicGainNode = ctx.createGain();
+    musicGainNode.gain.value = muted ? 0 : MUSIC_GAIN_NORMAL;
+    musicGainNode.connect(ctx.destination);
+  }
+
+  function applyMuteToMusic() {
+    if (!musicGainNode) return;
+    musicGainNode.gain.value = muted ? 0 : MUSIC_GAIN_NORMAL;
+  }
+
+  function scheduleStep(step, time) {
+    if (!ctx || !musicGainNode) return;
+
+    // Lead voice.
+    const leadIdx = LEAD_STEPS.indexOf(step);
+    if (leadIdx !== -1) {
+      const osc = ctx.createOscillator();
+      const g   = ctx.createGain();
+      osc.connect(g);
+      g.connect(musicGainNode);
+      osc.type = 'square';
+      osc.frequency.value = LEAD_FREQS[leadIdx];
+      g.gain.setValueAtTime(0.10, time);
+      g.gain.exponentialRampToValueAtTime(0.001, time + 0.07);
+      osc.start(time);
+      osc.stop(time + 0.07);
+    }
+
+    // Bass voice.
+    const bassIdx = BASS_STEPS.indexOf(step);
+    if (bassIdx !== -1) {
+      const osc = ctx.createOscillator();
+      const g   = ctx.createGain();
+      osc.connect(g);
+      g.connect(musicGainNode);
+      osc.type = 'square';
+      osc.frequency.value = BASS_FREQS[bassIdx];
+      g.gain.setValueAtTime(0.08, time);
+      g.gain.exponentialRampToValueAtTime(0.001, time + 0.18);
+      osc.start(time);
+      osc.stop(time + 0.18);
+    }
+
+    // Hi-hat voice (noise burst, Math.random is fine for buffer fill).
+    if (HIHAT_STEPS.includes(step)) {
+      const bufSamples = Math.ceil(ctx.sampleRate * 0.018);
+      const buf  = ctx.createBuffer(1, bufSamples, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < bufSamples; i++) data[i] = Math.random() * 2 - 1;
+      const ns  = ctx.createBufferSource();
+      ns.buffer = buf;
+      const bpf = ctx.createBiquadFilter();
+      bpf.type = 'bandpass';
+      bpf.frequency.value = 7000;
+      bpf.Q.value = 3;
+      const g = ctx.createGain();
+      ns.connect(bpf);
+      bpf.connect(g);
+      g.connect(musicGainNode);
+      g.gain.setValueAtTime(0.05, time);
+      g.gain.exponentialRampToValueAtTime(0.001, time + 0.018);
+      ns.start(time);
+      ns.stop(time + 0.018);
+    }
+
+    // Kick voice (noise burst, Math.random is fine for buffer fill).
+    if (KICK_STEPS.includes(step)) {
+      const bufSamples = Math.ceil(ctx.sampleRate * 0.09);
+      const buf  = ctx.createBuffer(1, bufSamples, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < bufSamples; i++) data[i] = Math.random() * 2 - 1;
+      const ns  = ctx.createBufferSource();
+      ns.buffer = buf;
+      const lpf = ctx.createBiquadFilter();
+      lpf.type = 'lowpass';
+      lpf.frequency.value = 90;
+      const g = ctx.createGain();
+      ns.connect(lpf);
+      lpf.connect(g);
+      g.connect(musicGainNode);
+      g.gain.setValueAtTime(0.35, time);
+      g.gain.exponentialRampToValueAtTime(0.001, time + 0.09);
+      ns.start(time);
+      ns.stop(time + 0.09);
+    }
+  }
+
+  function runScheduler() {
+    if (!ctx) return;
+    const lookAheadEnd = ctx.currentTime + LOOKAHEAD;
+    while (nextNoteTime < lookAheadEnd) {
+      scheduleStep(currentStep, nextNoteTime);
+      currentStep = (currentStep + 1) % 16;
+      nextNoteTime += STEP_TIME;
+    }
+  }
+
+  // musicStart(): called on fresh PLAYING entry (non-resume).
+  function musicStart() {
+    // Defensive: only start if context is running.
+    if (!ctx || ctx.state !== 'running') {
+      musicState = 'stopped';
+      return;
+    }
+    // Double-start guard: clear any existing interval before starting a new one.
+    if (schedulerInterval !== null) {
+      clearInterval(schedulerInterval);
+      schedulerInterval = null;
+    }
+    ensureMusicGain();
+    currentStep  = 0;
+    nextNoteTime = ctx.currentTime;
+    schedulerInterval = setInterval(runScheduler, SCHEDULE_INTERVAL_MS);
+    musicState = 'playing';
+  }
+
+  // musicPause(): called on PLAYING→PAUSED.
+  function musicPause() {
+    if (schedulerInterval !== null) {
+      clearInterval(schedulerInterval);
+      schedulerInterval = null;
+    }
+    musicState = 'paused';
+  }
+
+  // musicResume(): called on PAUSED→PLAYING.
+  function musicResume() {
+    if (!ctx || ctx.state !== 'running') return;
+    // Double-start guard.
+    if (schedulerInterval !== null) {
+      clearInterval(schedulerInterval);
+      schedulerInterval = null;
+    }
+    ensureMusicGain();
+    // Reset nextNoteTime to now so there's no gap after pause.
+    nextNoteTime = ctx.currentTime;
+    schedulerInterval = setInterval(runScheduler, SCHEDULE_INTERVAL_MS);
+    musicState = 'playing';
+  }
+
+  // musicStop(): called on →GAMEOVER, →VICTORY, →MENU, destroy().
+  function musicStop() {
+    if (schedulerInterval !== null) {
+      clearInterval(schedulerInterval);
+      schedulerInterval = null;
+    }
+    musicState = 'stopped';
+  }
+
   // ── Main observer (call once per rendered frame, after render()) ──────────
   function observe() {
+    const stateChanged = prevState !== game.state;
+
+    // ── Music state machine ──────────────────────────────────────────────────
+    if (stateChanged) {
+      // Fresh start / restart: any → PLAYING where prev was not PAUSED.
+      if (game.state === STATES.PLAYING && prevState !== STATES.PAUSED) {
+        musicStart();
+      }
+      // PLAYING → PAUSED.
+      else if (prevState === STATES.PLAYING && game.state === STATES.PAUSED) {
+        musicPause();
+      }
+      // PAUSED → PLAYING (resume).
+      else if (prevState === STATES.PAUSED && game.state === STATES.PLAYING) {
+        musicResume();
+      }
+      // → terminal / menu states.
+      else if (
+        game.state === STATES.GAMEOVER ||
+        game.state === STATES.VICTORY  ||
+        game.state === STATES.MENU
+      ) {
+        musicStop();
+      }
+    }
+
     // Reset on any (re)entry to a fresh run — same guard as render.js detectEvents().
     if (
-      prevState !== game.state &&
+      stateChanged &&
       game.state === STATES.PLAYING &&
       prevState !== STATES.PAUSED
     ) {
@@ -308,22 +516,30 @@ export function createAudio(game) {
   function destroy() {
     if (destroyed) return;
     destroyed = true;
+    musicStop(); // stop scheduler before closing context
     removeGestureListeners();
     if (ctx) {
       ctx.close().catch(() => {});
       ctx = null;
     }
+    musicGainNode = null;
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
   return {
     observe,
     destroy,
-    toggleMute() { muted = !muted; },
-    get muted()        { return muted; },
-    set muted(v)       { muted = !!v; },
-    get contextState() { return ctx ? ctx.state : 'suspended'; },
-    get sfxLog()       { return sfxLog; },
-    clearSfxLog()      { sfxLog.length = 0; },
+    toggleMute() {
+      muted = !muted;
+      applyMuteToMusic();
+    },
+    get muted()         { return muted; },
+    set muted(v)        { muted = !!v; applyMuteToMusic(); },
+    get contextState()  { return ctx ? ctx.state : 'suspended'; },
+    get sfxLog()        { return sfxLog; },
+    clearSfxLog()       { sfxLog.length = 0; },
+    // Music observability (consumed by the DEV hook in main.js).
+    get musicPlaying()  { return schedulerInterval !== null; },
+    get musicState()    { return musicState; },
   };
 }
