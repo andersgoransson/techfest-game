@@ -62,6 +62,30 @@
         outline-offset: 2px;
       }
 
+      /* Mute button — mirrors info-btn style, sits to its left */
+      #mute-btn {
+        position: fixed;
+        top: 12px;
+        right: 150px;
+        z-index: 100;
+        background: rgba(30, 40, 80, 0.82);
+        color: #a8c0ff;
+        border: 1px solid rgba(100, 140, 255, 0.45);
+        border-radius: 20px;
+        padding: 5px 14px;
+        font-size: 13px;
+        font-family: inherit;
+        cursor: pointer;
+        letter-spacing: 0.04em;
+        backdrop-filter: blur(4px);
+        transition: background 0.15s;
+      }
+      #mute-btn:hover, #mute-btn:focus-visible {
+        background: rgba(50, 70, 160, 0.9);
+        outline: 2px solid #7096ff;
+        outline-offset: 2px;
+      }
+
       /* Info panel modal */
       #info-panel-backdrop {
         display: none;
@@ -145,6 +169,7 @@
     <canvas id="game" width="1280" height="720" tabindex="0"></canvas>
     <div class="hint">← → / A D&nbsp;·&nbsp;move&nbsp;&nbsp;&nbsp;Space&nbsp;·&nbsp;shoot / start&nbsp;&nbsp;&nbsp;P&nbsp;·&nbsp;pause&nbsp;&nbsp;&nbsp;— blast each threat into its pillar · enter your LEGO email at game over to hit the leaderboard</div>
 
+    <button id="mute-btn" type="button" aria-pressed="false" aria-label="Mute sound">Mute</button>
     <button id="info-btn" type="button" aria-haspopup="dialog">How to score?</button>
 
     <div id="info-panel-backdrop" role="none">

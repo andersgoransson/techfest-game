@@ -10,6 +10,7 @@ import { createGame, STATES, TUNABLES, FIXED_DT } from './game/game.js';
 import { createInput } from './input.js';
 import { createRenderer } from './render/render.js';
 import * as leaderboard from './leaderboard.js';
+import { createAudio } from './audio/audio.js';
 
 const MAX_FRAME = 0.25; // clamp huge gaps (tab was backgrounded)
 
@@ -60,6 +61,32 @@ function boot() {
   // entry) → 'result' (placement reveal) → back to 'play'.
   const app = { phase: 'play', name: '', finalScore: 0, result: null };
   const render = createRenderer(ctx, game, app);
+
+  // Audio observer — pure SFX, no asset files.
+  const audioObserver = createAudio(game);
+
+  // --- Mute button wiring ---
+  const muteBtn = document.getElementById('mute-btn');
+  function updateMuteBtn() {
+    const isMuted = audioObserver.muted;
+    muteBtn.textContent = isMuted ? 'Unmute' : 'Mute';
+    muteBtn.setAttribute('aria-pressed', String(isMuted));
+    muteBtn.setAttribute('aria-label', isMuted ? 'Unmute sound' : 'Mute sound');
+  }
+  updateMuteBtn();
+  muteBtn.addEventListener('click', () => {
+    audioObserver.toggleMute();
+    updateMuteBtn();
+  });
+
+  // M key toggles mute from anywhere (separate from info-panel Escape handler).
+  function onMuteKey(e) {
+    if (e.code === 'KeyM') {
+      audioObserver.toggleMute();
+      updateMuteBtn();
+    }
+  }
+  window.addEventListener('keydown', onMuteKey);
 
   let last = performance.now();
   let acc = 0;
@@ -132,6 +159,7 @@ function boot() {
       }
       input.endFrame();
       render();
+      audioObserver.observe();
 
       if (!ready) { ready = true; if (window.__game) window.__game.ready = true; }
     } catch (err) {
@@ -149,7 +177,9 @@ function boot() {
   function destroy() {
     cancelAnimationFrame(rafId);
     input.destroy();
+    audioObserver.destroy();
     window.removeEventListener('keydown', onFinishKey);
+    window.removeEventListener('keydown', onMuteKey);
     document.removeEventListener('keydown', onInfoEscape);
     if (window.__game) window.__game.ready = false;
   }
@@ -158,6 +188,16 @@ function boot() {
   // Gated to dev/test only; a production build strips this via import.meta.env.DEV.
   const DEV = (import.meta && import.meta.env && import.meta.env.DEV) || window.__TEST__;
   if (DEV) {
+    // Stable audio sub-hook delegating to the audio observer.
+    const audioHook = {
+      get contextState() { return audioObserver.contextState; },
+      get muted()        { return audioObserver.muted; },
+      set muted(v)       { audioObserver.muted = v; updateMuteBtn(); },
+      get sfxLog()       { return audioObserver.sfxLog; },
+      clearSfxLog()      { audioObserver.clearSfxLog(); },
+      _teardown()        { audioObserver.destroy(); },
+    };
+
     window.__game = {
       ready: false,
       // Tunables exposed for tester convenience.
@@ -187,6 +227,8 @@ function boot() {
       start,
       togglePause,
       _teardown: destroy,
+      // Audio sub-hook (gated identically — absent in production builds).
+      audio: audioHook,
     };
   }
 
