@@ -741,6 +741,49 @@ export function createRenderer(ctx, game, app = { phase: 'play' }) {
     ctx.restore();
   }
 
+  // ── gun-heat bar (rendered inside the HUD top strip) ─────────────────────
+  // Only visible during PLAYING and PAUSED states.
+  function drawHeatBar() {
+    if (game.state !== STATES.PLAYING && game.state !== STATES.PAUSED) return;
+
+    const barW = 140, barH = 10;
+    const bx = 720, by = 38;
+
+    // Label.
+    text('GUN HEAT', bx, 30, '#7a84b8', 12, 'left', '700');
+
+    // Background track (8% white, matching the cloud-health bar style).
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    roundRect(bx, by, barW, barH, 5); ctx.fill();
+
+    const heatFrac = Math.max(0, Math.min(1, game._heat / TUNABLES.HEAT_MAX));
+
+    if (heatFrac > 0) {
+      // Color: green → yellow → red as heat rises; full red with glow while overheated.
+      let fillColor;
+      if (game._overheated) {
+        // Pulse the glow while the gun is locked out.
+        fillColor = '#ff5d73';
+        ctx.save();
+        ctx.shadowColor = '#ff5d73';
+        ctx.shadowBlur = 20 + 8 * Math.sin(clock * 14);
+        ctx.fillStyle = fillColor;
+        roundRect(bx, by, barW * heatFrac, barH, 5); ctx.fill();
+        ctx.restore();
+      } else {
+        fillColor = heatFrac < 0.5
+          ? mix('#4ade80', '#ffd166', heatFrac / 0.5)
+          : mix('#ffd166', '#ff5d73', (heatFrac - 0.5) / 0.5);
+        ctx.save();
+        ctx.shadowColor = fillColor;
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = fillColor;
+        roundRect(bx, by, barW * heatFrac, barH, 5); ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+
   // ── HUD (top bar) ──────────────────────────────────────────────────────────
   function drawHud() {
     // Bar background.
@@ -772,6 +815,8 @@ export function createRenderer(ctx, game, app = { phase: 'play' }) {
       glowText(`🔥 ×${game.combo}`, 0, 8, '#ffd166', 24, 'left', '800', 16);
       ctx.restore();
     }
+
+    drawHeatBar();
 
     // Cloud health bar (right side, above the pillar bank).
     const bw = 240, bh = 16;

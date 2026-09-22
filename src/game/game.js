@@ -44,6 +44,10 @@ export const TUNABLES = {
   MAX_THREAT_SPEED: 240,    // fastest threat descent (px/s) — escalation cap
   SPAWN_RAMP: 0.02,         // interval reduction per second of game-logic time (gentler)
   SPEED_RAMP: 3,            // px/s speed increase per second of game-logic time (gentler)
+  // Gun-heat mechanic: heat rises per shot, cools only when fire is released.
+  HEAT_MAX: 1.0,            // normalized ceiling; reaching it locks the gun
+  HEAT_PER_SHOT: 0.07,      // heat added per bullet fired  (~14 shots to max)
+  HEAT_COOL_RATE: 0.5,      // heat drained per second while fire is released  (2 s max→0)
 };
 
 // The six Well-Architected pillars — canonical key order for legend + HUD.
@@ -122,6 +126,8 @@ export function createGame({ seed = 12345 } = {}) {
     _filledPillarsSet: new Set(), // sticky set backing filledPillars (never shrinks in a round)
     _fireTimer: 0,
     _spawnTimer: 0,
+    _heat: 0,              // current gun heat 0.0–1.0
+    _overheated: false,    // true = gun locked until heat drains to 0
     seed,
   };
 
@@ -146,6 +152,8 @@ export function createGame({ seed = 12345 } = {}) {
     game._filledPillarsSet = new Set();
     game._fireTimer = 0;
     game._spawnTimer = 0;
+    game._heat = 0;
+    game._overheated = false;
     game.player = { x: WIDTH / 2, y: HEIGHT - 48, w: 34, h: 20 };
     recomputeScore();
   }
@@ -170,6 +178,12 @@ export function createGame({ seed = 12345 } = {}) {
     const p = game.player;
     game.bullets.push({ x: p.x, y: p.y - p.h, w: 4, h: 12 });
     game._fireTimer = FIRE_COOLDOWN;
+    // Raise gun heat; lock if we hit the ceiling.
+    game._heat = Math.min(TUNABLES.HEAT_MAX, game._heat + TUNABLES.HEAT_PER_SHOT);
+    if (game._heat >= TUNABLES.HEAT_MAX) {
+      game._heat = TUNABLES.HEAT_MAX;
+      game._overheated = true;
+    }
   }
 
   function overlaps(a, b) {
@@ -221,7 +235,16 @@ export function createGame({ seed = 12345 } = {}) {
 
     // --- Fire ---
     game._fireTimer -= dt;
-    if (input.isDown('fire') && game._fireTimer <= 0) fire();
+    if (input.isDown('fire') && game._fireTimer <= 0 && !game._overheated) fire();
+    // Cooling: only bleeds heat while the fire button is released.
+    if (!input.isDown('fire')) {
+      game._heat = Math.max(0, game._heat - TUNABLES.HEAT_COOL_RATE * dt);
+    }
+    // Unlock the gun once heat fully drains to zero.
+    if (game._overheated && game._heat <= 0) {
+      game._overheated = false;
+      game._heat = 0;
+    }
 
     // --- Move bullets (remove those that exit the top) ---
     for (const b of game.bullets) b.y -= BULLET_SPEED * dt;
@@ -338,6 +361,8 @@ export function createGame({ seed = 12345 } = {}) {
         ...game.bullets.map((b) => ({ type: 'bullet', x: b.x, y: b.y })),
         ...game.threats.map((e) => ({ type: 'threat', x: e.x, y: e.y })),
       ],
+      heat: game._heat,
+      overheated: game._overheated,
     }),
   };
 }
